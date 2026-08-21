@@ -249,23 +249,37 @@ def save_color_palette(colors: dict[str, Any], output_path: Path) -> None:
     plt.close(figure)
 
 
-def generate_logos(client: OpenAI, brief: dict[str, Any], name: str, slogan: str, colors: dict[str, Any], output_dir: Path) -> list[str]:
+def generate_logos(
+    client: OpenAI,
+    brief: dict[str, Any],
+    name: str,
+    slogan: str,
+    colors: dict[str, Any],
+    output_dir: Path,
+) -> tuple[list[str], list[str]]:
     palette = ", ".join(color["hex"] for color in [colors["main_color"], *colors["sub_colors"]])
     files: list[str] = []
+    errors: list[str] = []
     for number, direction in enumerate(("minimal geometric symbol", "refined wordmark and emblem"), start=1):
-        prompt = f"""Professional logo for the brand '{name}'.
+        try:
+            prompt = f"""Professional logo for the brand '{name}'.
 Industry: {brief['industry']}. Target: {brief['target']}. Tone: {brief.get('tone') or 'professional'}.
 Slogan concept: {slogan}. Approved colors: {palette}.
 Direction: {direction}. Clean flat vector-like identity, centered on a plain light background,
 strong silhouette, no product mockup, no photograph, no extra text, and no slogan text."""
-        response = client.images.generate(model=image_model(), prompt=prompt, size="1024x1024")
-        encoded = response.data[0].b64_json
-        if not encoded:
-            raise RuntimeError("이미지 API 응답에 PNG 데이터가 없습니다.")
-        filename = f"logo_{number:02d}.png"
-        (output_dir / filename).write_bytes(base64.b64decode(encoded))
-        files.append(filename)
-    return files
+            response = client.images.generate(model=image_model(), prompt=prompt, size="1024x1024")
+            encoded = response.data[0].b64_json
+            if not encoded:
+                raise RuntimeError("이미지 API 응답에 PNG 데이터가 없습니다.")
+            filename = f"logo_{number:02d}.png"
+            (output_dir / filename).write_bytes(base64.b64decode(encoded))
+            files.append(filename)
+            print(f"  - 저장: {output_dir / filename}")
+        except Exception as error:
+            message = f"로고 시안 {number} 생성 실패: {api_error_message(error)}"
+            errors.append(message)
+            print(f"  ! {message}")
+    return files, errors
 
 
 def api_error_message(error: Exception) -> str:
@@ -315,6 +329,8 @@ def main() -> None:
     try:
         print("[1/5] 브랜드 네이밍 생성 중...")
         result["naming_candidates"] = generate_naming(client, brief)
+        for candidate in result["naming_candidates"]:
+            print(f"  - {candidate['name']}: {candidate['meaning']}")
         name, meaning = result["naming_candidates"][0]["name"], result["naming_candidates"][0]["meaning"]
         result["brand_name"], result["brand_meaning"] = name, meaning
     except Exception as error:
@@ -324,6 +340,8 @@ def main() -> None:
     try:
         print("[2/5] 슬로건 생성 중...")
         result["slogans"] = generate_slogans(client, brief, name, meaning)
+        for item in result["slogans"]:
+            print(f"  - \"{item['text']}\"")
         slogan = result["slogans"][0]["text"]
         result["slogan"] = slogan
     except Exception as error:
@@ -333,6 +351,7 @@ def main() -> None:
     try:
         print("[3/5] 브랜드 스토리 생성 중...")
         result["story"] = generate_story(client, brief, name, meaning, slogan)
+        print(f"  - 스토리 생성 완료 ({len(result['story'])}자)")
     except Exception as error:
         result["errors"]["story"] = api_error_message(error)
         print(f"  브랜드 스토리 생성 실패: {result['errors']['story']}")
@@ -340,7 +359,13 @@ def main() -> None:
     try:
         print("[4/5] 컬러 팔레트 생성 중...")
         result["colors"] = generate_colors(client, brief, name, slogan, result["story"])
-        save_color_palette(result["colors"], output_dir / "color_palette.png")
+        palette_path = output_dir / "color_palette.png"
+        save_color_palette(result["colors"], palette_path)
+        main_color = result["colors"]["main_color"]
+        sub_colors = ", ".join(color["hex"] for color in result["colors"]["sub_colors"])
+        print(f"  - 메인: {main_color['hex']} ({main_color['name']})")
+        print(f"  - 서브: {sub_colors}")
+        print(f"  - 저장: {palette_path}")
     except Exception as error:
         result["errors"]["colors"] = api_error_message(error)
         print(f"  컬러 팔레트 생성 실패: {result['errors']['colors']}")
@@ -348,7 +373,12 @@ def main() -> None:
     if result["colors"]:
         try:
             print("[5/5] 로고 시안 생성 중...")
-            result["logo_files"] = generate_logos(client, brief, name, slogan, result["colors"], output_dir)
+            logo_files, logo_errors = generate_logos(
+                client, brief, name, slogan, result["colors"], output_dir
+            )
+            result["logo_files"] = logo_files
+            if logo_errors:
+                result["errors"]["logos"] = logo_errors
         except Exception as error:
             result["errors"]["logos"] = api_error_message(error)
             print(f"  로고 시안 생성 실패: {result['errors']['logos']}")
@@ -357,7 +387,7 @@ def main() -> None:
         print(f"  로고 시안 생성 건너뜀: {result['errors']['logos']}")
 
     save_json(result, output_dir / "brand_result.json")
-    print(f"\n완료: {output_dir.resolve()}")
+    print(f"\n✅ 완료! {output_dir.resolve()} 폴더를 확인하세요.")
 
 
 if __name__ == "__main__":
